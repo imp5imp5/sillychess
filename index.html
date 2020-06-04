@@ -587,7 +587,7 @@ function setupGridItems()
         if (table[x][y] == pcWall)
           cell.style.backgroundColor = '#333';
         else
-          cell.style.backgroundColor = ((x + y + 1) & 1) ? '#eee' : '#fff';
+          cell.style.backgroundColor = ((x + y) & 1) ? '#eee' : '#fff';
         
       }
     }
