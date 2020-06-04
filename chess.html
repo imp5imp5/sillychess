@@ -1,0 +1,923 @@
+<!DOCTYPE html>
+<head>
+<meta charset="utf-8">
+<style>
+  .gridWhite { margin:1em auto; border-collapse:collapse; }
+  .gridWhite td {  
+      cursor:pointer;
+      width:46px; height:46px;
+      border:1px solid #ccc;
+      background-color: #fff;
+      text-align:center;
+      font-family:Verdana; font-size:34px
+  }
+
+</style>
+
+<script>
+
+
+var level = [
+  "##########", //
+  "#cedbadec#", // 1
+  "#ffffffff#", // 2
+  "#........#", // 3
+  "#........#", // 4
+  "#........#", // 5
+  "#........#", // 6
+  "#66666666#", // 7
+  "#35421453#", // 8
+  "##########", //
+ ];
+
+var pcNone   = 0;
+var pcKing   = 1;
+var pcQueen  = 2;
+var pcRook   = 3;
+var pcBishop = 4;
+var pcKnight = 5;
+var pcPawn   = 6;
+var pcWall   = 10;
+
+var pcBlackOrigin = 10;
+
+var mvCanMove = 3;
+var mvCapture = 2;
+var mvDefend = 1;
+var mvObstacle = 0;
+
+
+var knightDx = [-1,  1, -1, 1, -2, -2,  2, 2];
+var knightDy = [-2, -2,  2, 2, -1,  1, -1, 1];
+var pieceTypeCost = [0, 500, 9, 5, 3, 3, 1];
+
+var table = [];
+var underAttack = [];
+var units = [];
+var tableWidth = 0;
+var tableHeight = 0;
+var selectedUnitIndex = -1;
+var playerArmy = 0;
+var aiArmy = 1 - playerArmy;
+var possibleMoves = [];
+var undoTable = [];
+
+var moveCnt = 0;
+var gameOver = false;
+
+var rightCastlingImpossible = [0, 0];
+var leftCastlingImpossible = [0, 0];
+var isCheck = [false, false];
+
+function MoveRecord(unitIndex_, toX_, toY_)
+{
+  this.unitIndex = unitIndex_;
+  this.fromX = units[this.unitIndex].x;
+  this.fromY = units[this.unitIndex].y;
+  this.toX = toX_;
+  this.toY = toY_;
+  this.fromPiece = units[this.unitIndex].piece;
+  this.toPiece = this.fromPiece;
+  this.captureIndex = -1;
+  this.castling = false;
+
+  var u = units[unitIndex_];
+  
+  if (table[this.toX][this.toY] != pcNone)  
+  {
+    for (var i = 0; i < units.length; i++)
+      if (units[i].exists && units[i].x == this.toX && units[i].y == this.toY)
+      {
+        if (units[i].army != u.army)
+          units[i].underAttack = true;
+
+        this.captureIndex = i;
+        break;
+      }
+  }
+  
+  if (this.fromPiece == pcPawn && this.toY == 1)
+    this.toPiece = pcQueen;
+
+  if (this.fromPiece == pcPawn + pcBlackOrigin && this.toY == 8)
+    this.toPiece = pcQueen + pcBlackOrigin;
+    
+  if (u.pieceType == pcKing && this.captureIndex >= 0 &&
+      units[this.captureIndex].pieceType == pcRook && u.army == units[this.captureIndex].army)
+  {
+    this.castling = true;
+  }
+  
+  if (u.piece == pcPawn)
+    if (table[this.toX][this.toY+1] == pcPawn + pcBlackOrigin)
+    {
+      var t = findUnitAt(this.toX, this.toY+1);
+      if (t.movedTwoRanks)
+        this.captureIndex = t.id;
+    }
+    
+  if (u.piece == pcPawn + pcBlackOrigin)
+    if (table[this.toX][this.toY-1] == pcPawn)
+    {
+      var t = findUnitAt(this.toX, this.toY-1);
+      if (t.movedTwoRanks)
+        this.captureIndex = t.id;
+    }
+
+   
+  this.applyMove = function(pushToUndoTable)
+  {
+    if (this.captureIndex >= 0)
+    {
+      var t = units[this.captureIndex];
+      t.exists = false;
+      table[t.x][t.y] = pcNone;
+    }
+      
+    table[this.toX][this.toY] = this.toPiece;
+    table[this.fromX][this.fromY] = pcNone;
+    var u = units[this.unitIndex];
+    u.piece = this.toPiece;
+    u.pieceType = this.toPiece % pcBlackOrigin;
+    u.x = this.toX;
+    u.y = this.toY;
+    
+    if (u.pieceType == pcKing)
+    {
+      rightCastlingImpossible[u.army]++;
+      leftCastlingImpossible[u.army]++;
+
+      if (this.castling)
+      {
+        units[this.captureIndex].exists = true;
+        if (this.toX == 1)
+        {
+          units[this.captureIndex].x = 4;
+          units[this.unitIndex].x = 3;
+          table[units[this.unitIndex].x][units[this.unitIndex].y] = this.toPiece;
+          table[this.toX][units[this.unitIndex].y] = pcNone;
+          table[units[this.captureIndex].x][units[this.captureIndex].y] = units[this.captureIndex].piece;
+        }
+        else if (this.toX == 8)
+        {
+          units[this.captureIndex].x = 6;
+          units[this.unitIndex].x = 7;
+          table[units[this.unitIndex].x][units[this.unitIndex].y] = this.toPiece;
+          table[this.toX][units[this.unitIndex].y] = pcNone;
+          table[units[this.captureIndex].x][units[this.captureIndex].y] = units[this.captureIndex].piece;
+        }
+      }
+    }
+    else if (u.pieceType == pcRook)
+    {
+      if (this.fromX == 1)
+        leftCastlingImpossible[u.army]++;
+
+      if (this.fromX == 8)
+        rightCastlingImpossible[u.army]++;
+    }    
+    else if (u.pieceType == pcPawn)
+    {
+      if (Math.abs(this.fromY - this.toY) == 2)
+        units[this.unitIndex].movedTwoRanks++;        
+    }
+
+    if (pushToUndoTable)
+      undoTable.push(this);
+  }
+
+  this.undoMove = function()
+  {
+    table[this.toX][this.toY] = pcNone;
+    table[this.fromX][this.fromY] = this.fromPiece;
+    var u = units[this.unitIndex];
+    u.piece = this.fromPiece;
+    u.pieceType = this.fromPiece % pcBlackOrigin;  
+    u.x = this.fromX;
+    u.y = this.fromY;
+  
+    if (this.captureIndex >= 0)
+    {
+      var uncapture = units[this.captureIndex];
+      uncapture.exists = true;
+      table[uncapture.x][uncapture.y] = uncapture.piece;
+    }
+    
+    if (u.pieceType == pcKing)
+    {
+      rightCastlingImpossible[u.army]--;
+      leftCastlingImpossible[u.army]--;
+
+      if (this.castling)
+      {
+        if (this.toX == 1)
+        {
+          units[this.captureIndex].x = this.toX;
+          table[this.toX][units[this.unitIndex].y] = units[this.captureIndex].piece;
+          table[3][units[this.unitIndex].y] = pcNone;
+          table[4][units[this.unitIndex].y] = pcNone;
+        }
+        else if (this.toX == 8)
+        {
+          units[this.captureIndex].x = this.toX;
+          table[this.toX][units[this.unitIndex].y] = units[this.captureIndex].piece;
+          table[6][units[this.unitIndex].y] = pcNone;
+          table[7][units[this.unitIndex].y] = pcNone;
+        }
+      }      
+    }
+    else if (u.pieceType == pcRook)
+    {
+      if (this.fromX == 1)
+        leftCastlingImpossible[u.army]--;
+        
+      if (this.fromX == 8)
+        rightCastlingImpossible[u.army]--;
+    }
+    else if (u.pieceType == pcPawn)
+    {
+      if (Math.abs(this.fromY - this.toY) == 2)
+        units[this.unitIndex].movedTwoRanks--;
+    }
+  }
+}
+
+
+function setMissionStatusText(text)
+{
+  var elem = document.getElementById("missionStatus");
+  elem.innerHTML = text;
+}
+ 
+function findUnitAt(x, y)
+{
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].x == x && units[i].y == y)
+      return units[i];
+
+  return null;
+}
+
+function canMoveTo(x, y, piece)
+{
+  if (x >= 0 && x < tableWidth && y >= 0 && y < tableHeight)
+  {
+    var v = table[x][y];
+
+    if (v == pcWall)
+      return mvObstacle;
+
+    if (piece == pcPawn)
+      if (table[x][y+1] == pcPawn + pcBlackOrigin)
+        if (findUnitAt(x, y+1).movedTwoRanks)
+          return mvCapture;          
+      
+    if (piece == pcPawn + pcBlackOrigin)
+      if (table[x][y-1] == pcPawn)
+        if (findUnitAt(x, y-1).movedTwoRanks)
+          return mvCapture;                
+
+    if (v == pcNone)
+      return mvCanMove;          
+
+    return ((piece > pcBlackOrigin) != (v > pcBlackOrigin)) ? mvCapture : mvDefend;
+  }
+ 
+  return mvObstacle;
+}
+
+function undoLastMove()
+{
+  if (undoTable.length > 0)
+  {  
+    var m = undoTable.pop();
+    m.undoMove();
+  }
+}
+
+function Unit(x_, y_, piece_, myId_)
+{
+  this.x = x_;
+  this.y = y_;
+  this.piece = piece_;
+  this.army = (piece_ > pcBlackOrigin) ? 1 : 0;
+  this.pieceType = piece_ % pcBlackOrigin;
+  this.exists = true;
+  this.id = myId_;
+  this.defendScore = 0;
+  this.attackScore = 0;
+  this.movedTwoRanks = 0;
+  this.underAttack = false;
+  this.forReplace = false;
+  
+  table[x_][y_] = piece_;
+
+  this.checkMove = function(xx, yy)
+  {
+    var m = canMoveTo(xx, yy, this.piece);
+
+    if (m == mvCanMove)
+    {
+      this.controlScore++;
+      return m;
+    }
+
+    if (m == mvDefend)
+    {
+      if (table[xx][yy] % pcBlackOrigin != pcKing)
+        this.defendScore += Math.min(pieceTypeCost[table[xx][yy] % pcBlackOrigin], 9) + 1;
+      return m;
+    }
+
+    if (m == mvCapture)
+    {
+      this.attackScore += Math.min(pieceTypeCost[table[xx][yy] % pcBlackOrigin], 9) + 1;
+      return m;
+    }
+    
+    return m;      
+  }
+
+  this.generatePossibleMoves = function()
+  {
+    this.defendScore = 0;
+    this.attackScore = 0;
+    this.controlScore = 0;
+    var res = [];
+    switch (this.pieceType)
+    {
+      case pcKing:
+        for (var dx = -1; dx <= 1; dx++)
+          for (var dy = -1; dy <= 1; dy++)
+            if (this.checkMove(this.x + dx, this.y + dy) >= mvCapture)
+              res.push(new MoveRecord(this.id, this.x + dx, this.y + dy));
+
+        if (!rightCastlingImpossible[this.army] && !isCheck[this.army])
+        {
+          var clear = true;
+          for (var xx = this.x + 1; xx <= 7; xx++)
+            if (this.checkMove(xx, this.y) != mvCanMove)
+            {
+              clear = false;
+              break;
+            }
+
+          if (clear)
+            res.push(new MoveRecord(this.id, 8, this.y));
+        }
+         
+        if (!leftCastlingImpossible[this.army] && !isCheck[this.army])
+        {
+          var clear = true;
+          for (var xx = this.x - 1; xx >= 2; xx--)
+            if (this.checkMove(xx, this.y) != mvCanMove)
+            {
+              clear = false;
+              break;
+            }
+
+          if (clear)
+            res.push(new MoveRecord(this.id, 1, this.y));
+        }
+      break;
+
+      case pcQueen:
+        for (var dx = -1; dx <= 1; dx++)
+          for (var dy = -1; dy <= 1; dy++)
+            for (var t = 1; t < 32; t++)
+            {
+              var m = this.checkMove(this.x + dx * t, this.y + dy * t);
+              if (m >= mvCapture)
+                res.push(new MoveRecord(this.id, this.x + dx * t, this.y + dy * t));
+
+              if (m <= mvCapture)
+                break;
+            }
+      break;
+
+      case pcRook:
+        for (var dx = -1; dx <= 1; dx++)
+          for (var dy = -1; dy <= 1; dy++)
+            if (dx == 0 || dy == 0)
+              for (var t = 1; t < 32; t++)
+              {
+                var m = this.checkMove(this.x + dx * t, this.y + dy * t);
+                if (m >= mvCapture)
+                  res.push(new MoveRecord(this.id, this.x + dx * t, this.y + dy * t));
+                
+                if (m <= mvCapture)
+                  break;
+              }
+      break;
+
+      case pcBishop:
+        for (var dx = -1; dx <= 1; dx++)
+          for (var dy = -1; dy <= 1; dy++)
+            if (dx != 0 && dy != 0)
+              for (var t = 1; t < 32; t++)
+              {
+                var m = this.checkMove(this.x + dx * t, this.y + dy * t);
+                if (m >= mvCapture)
+                  res.push(new MoveRecord(this.id, this.x + dx * t, this.y + dy * t));
+                
+                if (m <= mvCapture)
+                  break;
+              }
+      break;
+
+      case pcKnight:
+        for (var t = 0; t < knightDx.length; t++)
+        {
+          var xx = this.x + knightDx[t];
+          var yy = this.y + knightDy[t];
+          var m = this.checkMove(xx, yy);
+          if (m >= mvCapture)
+            res.push(new MoveRecord(this.id, xx, yy));
+        }
+      break;
+
+      case pcPawn:
+        {
+          var dy = (this.army) ? 1 : -1;
+          for (var dx = -1; dx <= 1; dx++)
+          {
+            var m = canMoveTo(this.x + dx, this.y + dy, this.piece);
+            if (dx == 0)
+            {
+              if (m == mvCanMove)
+              {
+                res.push(new MoveRecord(this.id, this.x, this.y + dy));
+
+                if ((this.army == 1 && this.y == 2) || (this.army == 0 && this.y == 7))
+                {
+                  var m = canMoveTo(this.x, this.y + dy * 2, this.piece);
+                  if (m == mvCanMove)
+                    res.push(new MoveRecord(this.id, this.x, this.y + dy * 2));
+                }              
+              }
+            }
+
+            if (dx != 0 && dy != 0)
+              if (m == mvCapture)
+              {
+                this.checkMove(this.x + dx, this.y + dy);
+                res.push(new MoveRecord(this.id, this.x + dx, this.y + dy));
+              }
+          }
+        }
+      break;
+
+    }
+
+    return res;
+  }
+}
+
+
+function initTable(width, height, level)
+{
+  tableWidth = width;
+  tableHeight = height;
+
+  for (var x = 0; x < width; x++)
+  {
+    var row = [];
+    var attRaw = [];
+    for (var y = 0; y < height; y++)
+    {
+      switch (level[y].charAt(x))
+      {
+        case '#': row.push(pcWall); break;
+        default: 
+          row.push(pcNone);
+      }
+      attRaw.push(0);
+    }
+
+    table.push(row);
+    underAttack.push(attRaw);
+  }
+
+  for (var x = 0; x < width; x++)
+  {
+    var row = [];
+    for (var y = 0; y < height; y++)
+    {
+      var id = units.length;
+      switch (level[y].charAt(x))
+      {
+        case '1': units.push(new Unit(x, y, pcKing,   id)); break;
+        case '2': units.push(new Unit(x, y, pcQueen,  id)); break;
+        case '3': units.push(new Unit(x, y, pcRook,   id)); break;
+        case '4': units.push(new Unit(x, y, pcBishop, id)); break;
+        case '5': units.push(new Unit(x, y, pcKnight, id)); break;
+        case '6': units.push(new Unit(x, y, pcPawn,   id)); break;
+        case 'a': units.push(new Unit(x, y, pcBlackOrigin + pcKing,   id)); break;
+        case 'b': units.push(new Unit(x, y, pcBlackOrigin + pcQueen,  id)); break;
+        case 'c': units.push(new Unit(x, y, pcBlackOrigin + pcRook,   id)); break;
+        case 'd': units.push(new Unit(x, y, pcBlackOrigin + pcBishop, id)); break;
+        case 'e': units.push(new Unit(x, y, pcBlackOrigin + pcKnight, id)); break;
+        case 'f': units.push(new Unit(x, y, pcBlackOrigin + pcPawn,   id)); break;
+      }
+    }
+  }
+}
+
+
+function getGraphicsSymbol(piece)
+{
+  switch (piece)
+  {
+    case pcNone:   return " ";
+    case pcKing:   return "&#9812;"
+    case pcQueen:  return "&#9813;"
+    case pcRook:   return "&#9814;"
+    case pcBishop: return "&#9815;"
+    case pcKnight: return "&#9816;"
+    case pcPawn:   return "&#9817;"    
+    case pcBlackOrigin + pcKing:   return "&#9818;"
+    case pcBlackOrigin + pcQueen:  return "&#9819;"
+    case pcBlackOrigin + pcRook:   return "&#9820;"
+    case pcBlackOrigin + pcBishop: return "&#9821;"
+    case pcBlackOrigin + pcKnight: return "&#9822;"
+    case pcBlackOrigin + pcPawn:   return "&#9823;"
+    case pcWall:   return " ";
+  }
+
+  return ""
+}
+
+function createClickableGrid(cols, rows, callback )
+{
+  var i = 0;
+  var grid = document.getElementById('tableDiv');  
+  grid.className = 'gridWhite';
+  for (var r = 0; r < rows; ++r)
+  {
+    var tr = grid.insertRow(r);
+    for (var c = 0; c < cols; ++c)
+    {
+      var cell = tr.insertCell(c);
+      cell.id = 'x'+ c + 'y' + r;
+  
+      cell.addEventListener('click',(function(el,r,c,i){
+        return function(){ callback(el,c,r,i); }
+       })(cell,r,c,i),false);
+    }
+  }
+  return grid;
+}
+
+function setupGridItems()
+{
+  for (var x = 0; x < tableWidth; x++)
+    for (var y = 0; y < tableHeight; y++)
+    {
+      var cell = document.getElementById('x'+ x + 'y' + y);
+
+      if (cell)
+      {
+        if ((x == 0 || x == 9) && y >= 1 && y <= 8)
+          cell.innerHTML = "<font size = 3>" + (tableHeight - y - 1) + "</font>";
+        else if ((y == 0 || y == 9) && x >= 1 && x <= 8)
+          cell.innerHTML = "<font size = 3>" + "abcdefgh".charAt(x - 1) + "</font>";
+        else
+          cell.innerHTML = getGraphicsSymbol(table[x][y]);
+
+        if (table[x][y] == pcWall)
+          cell.style.backgroundColor = '#333';
+        else
+          cell.style.backgroundColor = ((x + y + 1) & 1) ? '#eee' : '#fff';
+        
+      }
+    }
+
+  for (var i = 0; i < possibleMoves.length; i++)
+  {
+    var x = possibleMoves[i].toX;
+    var y = possibleMoves[i].toY;
+    var cell = document.getElementById('x'+ x + 'y' + y);
+    if (cell)
+      cell.style.backgroundColor = ((x + y) & 1) ? '#afa' : '#afa';
+  }
+}
+
+function estimatePositionForAi(forArmy)
+{
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].pieceType == pcKing)
+      units[i].underAttack = false;
+    
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists)
+      units[i].generatePossibleMoves();
+
+
+  var sum = 0;
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists)
+    {
+      sum += ((units[i].army == forArmy) ? 1 : -1) * 
+        (pieceTypeCost[units[i].pieceType] * 200 + 
+         units[i].attackScore * 4 + 
+         units[i].defendScore * 2 +
+         ((units[i].controlScore >= 4) ? (moveCnt < 3 ? 50 : 1) : 0)
+         );
+           
+      if (moveCnt > 12)
+      {
+        if (units[i].piece == pcPawn && units[i].y <= 5)
+          sum += (6 - units[i].y) * 4;
+          
+        if (units[i].piece == pcPawn + pcBlackOrigin && units[i].y >= 4)
+          sum += (units[i].y - 3) * 4;
+      }
+
+      if (units[i].pieceType == pcKing && units[i].underAttack)
+        sum += ((units[i].army == forArmy) ? -40 : 40);
+    }
+
+  return sum;
+}
+
+function aiMove(depth, forArmy)
+{
+  var allMoves = [];
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].army == forArmy)
+      allMoves = allMoves.concat(units[i].generatePossibleMoves());
+
+  var bestScore = -1000000;
+  var bestMoveList = [];
+
+  for (var i = 0; i < allMoves.length; i++)
+  {
+    allMoves[i].applyMove(true);
+    if (depth == 0 && isKingUnderAttack(forArmy))
+    {
+      undoLastMove();
+      continue;
+    }
+
+    var undoCnt = 1;
+
+    if (depth == 0)
+      if (aiMove(depth + 1, 1 - forArmy))
+      {
+        undoCnt++;
+        if (moveCnt > 20)
+          if (aiMove(depth + 2, forArmy))
+          {
+            undoCnt++;
+          }
+      }
+    
+    var score = estimatePositionForAi(forArmy);
+
+    if (score >= bestScore)
+    {
+      if (score > bestScore)
+        bestMoveList = [];
+
+      bestScore = score;
+      bestMoveList.push(allMoves[i]);
+    }
+  
+    for (var u = 0; u < undoCnt; u++)
+      undoLastMove();
+  } 
+
+  if (bestMoveList.length > 0)
+  {
+    var moveIdx = Math.floor(Math.random() * bestMoveList.length);
+    bestMoveList[moveIdx].applyMove(true);
+    return true;
+  }
+  else
+    return false;
+}
+
+function clearPawnFlags(forArmy)
+{
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].pieceType == pcPawn && units[i].army == forArmy)
+      units[i].movedTwoRanks = 0;    
+}
+
+function clearUnderAttack()
+{
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists)
+      units[i].underAttack = false;
+}
+
+function clearUnderAttackCells()
+{
+  for (var x = 0; x < tableWidth; x++)
+    for (var y = 0; y < tableHeight; y++)
+      underAttack[x][y] = 0;
+}
+
+function isKingUnderAttack(forArmy)
+{
+  clearUnderAttack();
+
+  for (var j = 0; j < units.length; j++)
+    if (units[j].exists && units[j].army != forArmy)
+      units[j].generatePossibleMoves();
+  
+  for (var j = 0; j < units.length; j++)
+    if (units[j].exists && units[j].pieceType == pcKing && units[j].army == forArmy)
+      if (units[j].underAttack)
+        return true;
+          
+  return false;
+}
+
+function removeMovesWhenKingIsUnderAttack(forArmy, moves)
+{
+  // check for is king is under attack on castling route
+  {
+    clearUnderAttackCells();
+
+    var allMoves = [];
+    for (var j = 0; j < units.length; j++)
+      if (units[j].exists && units[j].army != forArmy)
+        allMoves = allMoves.concat(units[j].generatePossibleMoves());
+        
+    for (var i = allMoves.length - 1; i >= 0; i--)
+      underAttack[allMoves[i].toX][allMoves[i].toY] = 1;
+
+    for (var i = moves.length - 1; i >= 0; i--)
+      if (moves[i].castling)
+      {
+        var m = moves[i];
+        if (m.toX == 1)
+          if (underAttack[4][m.toY] || underAttack[5][m.toY])
+            moves.splice(i, 1);
+
+        if (m.toX == 8)
+          if (underAttack[6][m.toY])
+            moves.splice(i, 1);
+      }
+  }
+   
+
+  for (var i = moves.length - 1; i >= 0; i--)
+  {  
+    clearUnderAttack();
+    moves[i].applyMove(true);
+
+    for (var j = 0; j < units.length; j++)
+      if (units[j].exists && units[j].army != forArmy)
+        units[j].generatePossibleMoves();
+
+    moves[i].undoMove();
+
+    for (var j = 0; j < units.length; j++)
+      if (units[j].exists && units[j].pieceType == pcKing && units[j].army == forArmy)
+        if (units[j].underAttack)
+          moves.splice(i, 1);    
+  }
+}
+
+function updateMissionCondition()
+{
+  setMissionStatusText("---");
+  isCheck = [false, false];
+
+  for (var forArmy = 0; forArmy <= 1; forArmy++)
+  {
+    var check = isKingUnderAttack(forArmy);
+    isCheck[forArmy] = check;
+
+    if (check && forArmy == playerArmy)
+      setMissionStatusText("Шах");
+      
+    var allMoves = [];
+    for (var i = 0; i < units.length; i++)
+      if (units[i].exists && units[i].army == forArmy)
+        allMoves = allMoves.concat(units[i].generatePossibleMoves());
+
+    removeMovesWhenKingIsUnderAttack(forArmy, allMoves);
+
+    if (allMoves.length == 0)
+    {
+      if (check)
+        setMissionStatusText("Мат");
+      else
+        setMissionStatusText("Пат");      
+
+      gameOver = true;
+    }
+  }  
+}
+
+
+function aiAction()
+{
+  updateMissionCondition();
+  
+  if (!gameOver)
+  {      
+    aiMove(0, aiArmy);
+    moveCnt++;
+
+    clearPawnFlags(playerArmy);
+    updateMissionCondition();
+  }
+
+  setupGridItems();
+}
+
+var waitingForPlayerResponse = false;
+
+
+function onCellClick(elem, x, y, index)
+{
+  if (gameOver || waitingForPlayerResponse)
+    return;    
+
+  if (selectedUnitIndex >= 0)
+  {
+    selectedUnitIdx = -1;
+    for (var i = 0; i < possibleMoves.length; i++)
+      if (x == possibleMoves[i].toX && y == possibleMoves[i].toY)
+      {      
+        possibleMoves[i].applyMove(false);        
+
+        if (possibleMoves[i].toPiece != possibleMoves[i].fromPiece)
+        {
+          units[possibleMoves[i].unitIndex].forReplace = true;
+          document.getElementById('selectPiece').style.display = 'block';
+          setMissionStatusText("Выберите фигуру");
+          waitingForPlayerResponse = true;
+          possibleMoves = [];
+          return;
+        }
+
+        possibleMoves = [];        
+        clearPawnFlags(aiArmy);        
+        aiAction();        
+        return;
+      }
+  }
+
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].x == x && units[i].y == y && units[i].army == playerArmy)
+    {
+      selectedUnitIndex = i;
+      possibleMoves = units[i].generatePossibleMoves();
+      removeMovesWhenKingIsUnderAttack(playerArmy, possibleMoves);
+      setupGridItems();
+      break;
+    }
+}
+
+
+
+function selectedPiece(pieceType)
+{
+  document.getElementById('selectPiece').style.display = 'none';
+  for (var i = 0; i < units.length; i++)
+    if (units[i].exists && units[i].forReplace)
+    {
+      units[i].forReplace = false;
+      units[i].pieceType = pieceType;
+      units[i].piece = pieceType;
+      table[units[i].x][units[i].y] = pieceType;
+    }
+
+  aiAction();
+  waitingForPlayerResponse = false; 
+}
+
+
+function init()
+{  
+  setMissionStatusText("---");
+
+  initTable(level[0].length, level.length, level);
+  createClickableGrid(tableWidth, tableHeight, onCellClick);
+  updateMissionCondition();
+  setupGridItems();
+}
+
+window.onload = init;
+
+
+// JS Chess
+// 2014 Alexey Borisov 
+
+</script>
+</head>
+<body>
+  <div id='missionStatus' align='center' style='font-family:Verdana; font-size: 20px;' >...</div>
+  <div> <table id='tableDiv' align='center'></table> </div>
+  <div id='selectPiece' align='center' style='font-family:Verdana; font-size: 20px; display:none'>
+     <button onclick='selectedPiece(pcQueen)'  style='font-family:Verdana; font-size: 36px'>&#9813;</button>
+     <button onclick='selectedPiece(pcRook)'   style='font-family:Verdana; font-size: 36px'>&#9814;</button>
+     <button onclick='selectedPiece(pcBishop)' style='font-family:Verdana; font-size: 36px'>&#9815;</button>
+     <button onclick='selectedPiece(pcKnight)' style='font-family:Verdana; font-size: 36px'>&#9816;</button>
+  </div>
+</body>
